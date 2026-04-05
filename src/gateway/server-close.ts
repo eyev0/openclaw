@@ -45,7 +45,7 @@ export function createGatewayCloseHandler(params: {
           : null;
 
       try {
-        const shutdownEvent = createInternalHookEvent("gateway", "shutdown", "gateway:shutdown", {
+        const shutdownEvent = createInternalHookEvent("gateway", "shutdown", "gateway", {
           reason,
           restartExpectedMs,
         });
@@ -55,7 +55,7 @@ export function createGatewayCloseHandler(params: {
           const preRestartEvent = createInternalHookEvent(
             "gateway",
             "pre-restart",
-            "gateway:pre-restart",
+            "gateway",
             {
               reason,
               restartExpectedMs,
