@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   abortEmbeddedPiRun,
   getActiveEmbeddedRunCount,
@@ -107,6 +108,8 @@ export async function runGatewayLoop(params: {
     }
     shuttingDown = true;
     const isRestart = action === "restart";
+    const restartId = isRestart ? randomUUID() : undefined;
+    const correlationId = restartId;
     gatewayLog.info(`received ${signal}; ${isRestart ? "restarting" : "shutting down"}`);
 
     // Allow extra time for draining active turns on restart.
@@ -162,6 +165,8 @@ export async function runGatewayLoop(params: {
         await server?.close({
           reason: isRestart ? "gateway restarting" : "gateway stopping",
           restartExpectedMs: isRestart ? 1500 : null,
+          initiator: signal,
+          ...(restartId ? { restartId, correlationId } : {}),
         });
       } catch (err) {
         gatewayLog.error(`shutdown error: ${String(err)}`);

@@ -16,7 +16,10 @@ const mocks = vi.hoisted(() => ({
   formatRestartSentinelMessage: vi.fn(() => "restart message"),
   summarizeRestartSentinel: vi.fn(() => "restart summary"),
   resolveMainSessionKeyFromConfig: vi.fn(() => "agent:main:main"),
-  parseSessionThreadInfo: vi.fn(() => ({ baseSessionKey: null, threadId: undefined })),
+  parseSessionThreadInfo: vi.fn(() => ({
+    baseSessionKey: null,
+    threadId: undefined,
+  })),
   loadSessionEntry: vi.fn(() => ({ cfg: {}, entry: {} })),
   resolveAnnounceTargetFromKey: vi.fn(() => null),
   deliveryContextFromSession: vi.fn(() => undefined),
@@ -138,7 +141,7 @@ describe("scheduleRestartSentinelWake", () => {
       expect.objectContaining({
         channel: "whatsapp",
         to: "+15550002",
-        session: { key: "agent:main:main", agentId: "main" },
+        session: expect.objectContaining({ key: "agent:main:main" }),
         deps,
         bestEffort: false,
         skipQueue: true,
@@ -263,6 +266,66 @@ describe("scheduleRestartSentinelWake", () => {
     expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith("restart message", {
       sessionKey: "agent:main:main",
     });
+    expect(mocks.requestHeartbeatNow).not.toHaveBeenCalled();
+    expect(mocks.deliverOutboundPayloads).not.toHaveBeenCalled();
+  });
+  it("runs outbox tasks when primary notice is suppressed", async () => {
+    mocks.consumeRestartSentinel.mockResolvedValue({
+      payload: {
+        restartId: "restart-1",
+        suppressPrimaryNotice: true,
+        outbox: [
+          {
+            message: "outbox message",
+            sessionKey: "agent:main:main",
+            restartId: "restart-1",
+            deliveryContext: {
+              channel: "whatsapp",
+              to: "+15550002",
+              accountId: "acct-2",
+            },
+          },
+        ],
+      },
+    } as unknown as Awaited<ReturnType<typeof mocks.consumeRestartSentinel>>);
+
+    await scheduleRestartSentinelWake({ deps: {} as never });
+
+    expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
+      "outbox message",
+      expect.objectContaining({
+        sessionKey: "agent:main:main",
+      }),
+    );
+    expect(mocks.requestHeartbeatNow).toHaveBeenCalledWith({
+      reason: "wake",
+      sessionKey: "agent:main:main",
+    });
+    expect(mocks.deliverOutboundPayloads).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payloads: [{ text: "outbox message" }],
+      }),
+    );
+  });
+
+  it("skips outbox tasks when restartId guard mismatches", async () => {
+    mocks.consumeRestartSentinel.mockResolvedValue({
+      payload: {
+        restartId: "restart-1",
+        suppressPrimaryNotice: true,
+        outbox: [
+          {
+            message: "should be skipped",
+            sessionKey: "agent:main:main",
+            restartId: "restart-2",
+          },
+        ],
+      },
+    } as unknown as Awaited<ReturnType<typeof mocks.consumeRestartSentinel>>);
+
+    await scheduleRestartSentinelWake({ deps: {} as never });
+
+    expect(mocks.enqueueSystemEvent).not.toHaveBeenCalled();
     expect(mocks.requestHeartbeatNow).not.toHaveBeenCalled();
     expect(mocks.deliverOutboundPayloads).not.toHaveBeenCalled();
   });

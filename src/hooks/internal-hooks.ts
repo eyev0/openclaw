@@ -34,12 +34,66 @@ export type GatewayStartupHookContext = {
   cfg?: OpenClawConfig;
   deps?: CliDeps;
   workspaceDir?: string;
+  /** Restart identifier when startup follows a gateway restart sentinel. */
+  restartId?: string;
+  /** Correlation identifier for lifecycle stitching (alias of restartId today). */
+  correlationId?: string;
+  /** Best-effort initiator/source of the restart (e.g. SIGUSR1, systemd). */
+  initiator?: string;
 };
 
 export type GatewayStartupHookEvent = InternalHookEvent & {
   type: "gateway";
   action: "startup";
   context: GatewayStartupHookContext;
+};
+
+/**
+ * Outbox task queued during `gateway:shutdown` / `gateway:pre-restart` hooks.
+ * These tasks are persisted into the restart sentinel and executed on startup.
+ */
+export type GatewayRestartOutboxTask = {
+  /** User-visible message to deliver after restart. */
+  message: string;
+  /** Target session to wake/deliver into after restart. */
+  sessionKey?: string;
+  /** Optional routing override captured at shutdown time. */
+  deliveryContext?: {
+    channel?: string;
+    to?: string;
+    accountId?: string;
+  };
+  /** Optional thread context for threaded channels. */
+  threadId?: string;
+  /** Optional restart guard; mismatched tasks are skipped on startup. */
+  restartId?: string;
+  /** Optional correlation guard; mismatched tasks are skipped on startup. */
+  correlationId?: string;
+};
+
+export type GatewayLifecycleHookContext = {
+  reason?: string;
+  restartExpectedMs?: number | null;
+  /** Best-effort initiator/source (e.g. SIGUSR1, SIGTERM). */
+  initiator?: string;
+  /** Stable restart identifier across pre-restart -> startup. */
+  restartId?: string;
+  /** Correlation identifier for lifecycle stitching. */
+  correlationId?: string;
+  /** Mutable queue that hooks can append to for post-restart execution. */
+  outbox?: GatewayRestartOutboxTask[];
+};
+
+export type GatewayShutdownHookEvent = InternalHookEvent & {
+  type: "gateway";
+  action: "shutdown";
+  context: GatewayLifecycleHookContext;
+};
+
+export type GatewayPreRestartHookEvent = InternalHookEvent & {
+  type: "gateway";
+  action: "pre-restart";
+  context: GatewayLifecycleHookContext;
 };
 
 // ============================================================================

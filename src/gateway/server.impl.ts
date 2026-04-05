@@ -321,7 +321,13 @@ async function prepareGatewayStartupConfig(params: {
 }
 
 export type GatewayServer = {
-  close: (opts?: { reason?: string; restartExpectedMs?: number | null }) => Promise<void>;
+  close: (opts?: {
+    reason?: string;
+    restartExpectedMs?: number | null;
+    initiator?: string;
+    restartId?: string;
+    correlationId?: string;
+  }) => Promise<void>;
 };
 
 export type GatewayServerOptions = {

@@ -27,10 +27,35 @@ export type RestartSentinelStats = {
   durationMs?: number | null;
 };
 
+export type RestartOutboxTask = {
+  /** User-visible message delivered after startup. */
+  message: string;
+  /** Session to wake after restart (preferred for routing continuity). */
+  sessionKey?: string;
+  /** Optional channel routing override captured at shutdown time. */
+  deliveryContext?: {
+    channel?: string;
+    to?: string;
+    accountId?: string;
+  };
+  /** Optional thread id for threaded channels. */
+  threadId?: string;
+  /** Optional restart guard; mismatched tasks are skipped. */
+  restartId?: string;
+  /** Optional correlation guard; mismatched tasks are skipped. */
+  correlationId?: string;
+};
+
 export type RestartSentinelPayload = {
   kind: "config-apply" | "config-patch" | "update" | "restart";
   status: "ok" | "error" | "skipped";
   ts: number;
+  /** Stable restart identifier across pre-restart and startup. */
+  restartId?: string;
+  /** Correlation identifier for lifecycle stitching (alias of restartId today). */
+  correlationId?: string;
+  /** Best-effort initiator/source (e.g., SIGUSR1, systemd, launchctl). */
+  initiator?: string;
   sessionKey?: string;
   /** Delivery context captured at restart time to ensure channel routing survives restart. */
   deliveryContext?: {
@@ -43,6 +68,13 @@ export type RestartSentinelPayload = {
   message?: string | null;
   doctorHint?: string | null;
   stats?: RestartSentinelStats | null;
+  /**
+   * When true, skip the default sentinel summary message and only run outbox tasks.
+   * Existing restart sentinel producers remain unchanged (false/undefined).
+   */
+  suppressPrimaryNotice?: boolean;
+  /** Post-restart tasks captured during shutdown hooks. */
+  outbox?: RestartOutboxTask[];
 };
 
 export type RestartSentinel = {

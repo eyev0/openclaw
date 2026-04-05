@@ -1,11 +1,153 @@
+import { randomUUID } from "node:crypto";
 import type { Server as HttpServer } from "node:http";
 import type { WebSocketServer } from "ws";
 import type { CanvasHostHandler, CanvasHostServer } from "../canvas-host/server.js";
 import { type ChannelId, listChannelPlugins } from "../channels/plugins/index.js";
 import { stopGmailWatcher } from "../hooks/gmail-watcher.js";
-import { createInternalHookEvent, triggerInternalHook } from "../hooks/internal-hooks.js";
+import {
+  createInternalHookEvent,
+  triggerInternalHook,
+  type GatewayRestartOutboxTask,
+} from "../hooks/internal-hooks.js";
 import type { HeartbeatRunner } from "../infra/heartbeat-runner.js";
+import {
+  formatDoctorNonInteractiveHint,
+  readRestartSentinel,
+  writeRestartSentinel,
+} from "../infra/restart-sentinel.js";
+import type { RestartOutboxTask, RestartSentinelPayload } from "../infra/restart-sentinel.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
+
+type GatewayCloseOptions = {
+  reason?: string;
+  restartExpectedMs?: number | null;
+  /** Best-effort initiator/source (e.g. SIGUSR1, SIGTERM). */
+  initiator?: string;
+  /** Stable restart identifier for lifecycle correlation. */
+  restartId?: string;
+  /** Correlation identifier (alias of restartId by default). */
+  correlationId?: string;
+};
+
+function normalizeOutboxTaskStrings(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeGatewayOutbox(
+  outbox: GatewayRestartOutboxTask[],
+  restartId?: string,
+  correlationId?: string,
+): RestartOutboxTask[] {
+  return outbox
+    .map((raw) => {
+      if (!raw || typeof raw !== "object") {
+        return null;
+      }
+      const message = normalizeOutboxTaskStrings(raw.message);
+      if (!message) {
+        return null;
+      }
+      const sessionKey = normalizeOutboxTaskStrings(raw.sessionKey);
+      const threadId = normalizeOutboxTaskStrings(raw.threadId);
+      const deliveryContext = raw.deliveryContext;
+      const delivery =
+        deliveryContext && typeof deliveryContext === "object"
+          ? {
+              channel: normalizeOutboxTaskStrings(deliveryContext.channel),
+              to: normalizeOutboxTaskStrings(deliveryContext.to),
+              accountId: normalizeOutboxTaskStrings(deliveryContext.accountId),
+            }
+          : undefined;
+      const resolvedRestartId = normalizeOutboxTaskStrings(raw.restartId) ?? restartId;
+      const resolvedCorrelationId =
+        normalizeOutboxTaskStrings(raw.correlationId) ?? correlationId ?? resolvedRestartId;
+      const task: RestartOutboxTask = {
+        message,
+        ...(sessionKey ? { sessionKey } : {}),
+        ...(threadId ? { threadId } : {}),
+        ...(delivery?.channel || delivery?.to || delivery?.accountId
+          ? {
+              deliveryContext: {
+                ...(delivery.channel ? { channel: delivery.channel } : {}),
+                ...(delivery.to ? { to: delivery.to } : {}),
+                ...(delivery.accountId ? { accountId: delivery.accountId } : {}),
+              },
+            }
+          : {}),
+        ...(resolvedRestartId ? { restartId: resolvedRestartId } : {}),
+        ...(resolvedCorrelationId ? { correlationId: resolvedCorrelationId } : {}),
+      };
+      return task;
+    })
+    .filter((task): task is RestartOutboxTask => task !== null);
+}
+
+async function persistGatewayRestartOutbox(params: {
+  reason: string;
+  initiator?: string;
+  restartId?: string;
+  correlationId?: string;
+  outbox: GatewayRestartOutboxTask[];
+}) {
+  const normalizedOutbox = normalizeGatewayOutbox(
+    params.outbox,
+    params.restartId,
+    params.correlationId,
+  );
+
+  const existing = await readRestartSentinel().catch(() => null);
+  const existingPayload = existing?.payload;
+  const existingOutbox = Array.isArray(existingPayload?.outbox) ? existingPayload.outbox : [];
+  const mergedOutbox = [...existingOutbox, ...normalizedOutbox];
+
+  if (!existingPayload && mergedOutbox.length === 0) {
+    return;
+  }
+
+  const resolvedRestartId = params.restartId ?? existingPayload?.restartId;
+  const resolvedCorrelationId =
+    params.correlationId ?? existingPayload?.correlationId ?? resolvedRestartId;
+  const resolvedInitiator = params.initiator ?? existingPayload?.initiator;
+  const stats = {
+    ...existingPayload?.stats,
+    reason: existingPayload?.stats?.reason ?? params.reason,
+  };
+
+  const payload: RestartSentinelPayload = {
+    kind: existingPayload?.kind ?? "restart",
+    status: existingPayload?.status ?? "ok",
+    ts: existingPayload?.ts ?? Date.now(),
+    ...(resolvedRestartId ? { restartId: resolvedRestartId } : {}),
+    ...(resolvedCorrelationId ? { correlationId: resolvedCorrelationId } : {}),
+    ...(resolvedInitiator ? { initiator: resolvedInitiator } : {}),
+    ...(existingPayload?.sessionKey ? { sessionKey: existingPayload.sessionKey } : {}),
+    ...(existingPayload?.deliveryContext
+      ? { deliveryContext: existingPayload.deliveryContext }
+      : {}),
+    ...(existingPayload?.threadId ? { threadId: existingPayload.threadId } : {}),
+    ...(typeof existingPayload?.message === "string" || existingPayload?.message === null
+      ? { message: existingPayload.message }
+      : {}),
+    ...(existingPayload?.doctorHint
+      ? { doctorHint: existingPayload.doctorHint }
+      : { doctorHint: formatDoctorNonInteractiveHint() }),
+    ...(Object.keys(stats).length > 0 ? { stats } : {}),
+    ...(typeof existingPayload?.suppressPrimaryNotice === "boolean"
+      ? { suppressPrimaryNotice: existingPayload.suppressPrimaryNotice }
+      : !existingPayload && mergedOutbox.length > 0
+        ? { suppressPrimaryNotice: true }
+        : {}),
+    ...(mergedOutbox.length > 0 ? { outbox: mergedOutbox } : {}),
+  };
+
+  await writeRestartSentinel(payload).catch(() => {
+    // best-effort only
+  });
+}
 
 export function createGatewayCloseHandler(params: {
   bonjourStop: (() => Promise<void>) | null;
@@ -35,7 +177,7 @@ export function createGatewayCloseHandler(params: {
   httpServer: HttpServer;
   httpServers?: HttpServer[];
 }) {
-  return async (opts?: { reason?: string; restartExpectedMs?: number | null }) => {
+  return async (opts?: GatewayCloseOptions) => {
     try {
       const reasonRaw = typeof opts?.reason === "string" ? opts.reason.trim() : "";
       const reason = reasonRaw || "gateway stopping";
@@ -43,25 +185,46 @@ export function createGatewayCloseHandler(params: {
         typeof opts?.restartExpectedMs === "number" && Number.isFinite(opts.restartExpectedMs)
           ? Math.max(0, Math.floor(opts.restartExpectedMs))
           : null;
+      const initiatorRaw = typeof opts?.initiator === "string" ? opts.initiator.trim() : "";
+      const initiator = initiatorRaw || undefined;
+      const restartId =
+        restartExpectedMs !== null
+          ? (normalizeOutboxTaskStrings(opts?.restartId) ?? randomUUID())
+          : undefined;
+      const correlationIdRaw =
+        typeof opts?.correlationId === "string" ? opts.correlationId.trim() : "";
+      const correlationId = correlationIdRaw || restartId;
+      const outbox: GatewayRestartOutboxTask[] = [];
 
       try {
         const shutdownEvent = createInternalHookEvent("gateway", "shutdown", "gateway", {
           reason,
           restartExpectedMs,
+          ...(initiator ? { initiator } : {}),
+          ...(restartId ? { restartId } : {}),
+          ...(correlationId ? { correlationId } : {}),
+          outbox,
         });
         await triggerInternalHook(shutdownEvent);
 
         if (restartExpectedMs !== null) {
-          const preRestartEvent = createInternalHookEvent(
-            "gateway",
-            "pre-restart",
-            "gateway",
-            {
-              reason,
-              restartExpectedMs,
-            },
-          );
+          const preRestartEvent = createInternalHookEvent("gateway", "pre-restart", "gateway", {
+            reason,
+            restartExpectedMs,
+            ...(initiator ? { initiator } : {}),
+            ...(restartId ? { restartId } : {}),
+            ...(correlationId ? { correlationId } : {}),
+            outbox,
+          });
           await triggerInternalHook(preRestartEvent);
+
+          await persistGatewayRestartOutbox({
+            reason,
+            initiator,
+            restartId,
+            correlationId,
+            outbox,
+          });
         }
       } catch {
         // Best-effort only; shutdown should proceed even if hooks fail.
@@ -112,6 +275,9 @@ export function createGatewayCloseHandler(params: {
       params.broadcast("shutdown", {
         reason,
         restartExpectedMs,
+        ...(initiator ? { initiator } : {}),
+        ...(restartId ? { restartId } : {}),
+        ...(correlationId ? { correlationId } : {}),
       });
       clearInterval(params.tickInterval);
       clearInterval(params.healthInterval);

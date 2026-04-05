@@ -1,8 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createGatewayCloseHandler } from "./server-close.js";
 
-const { triggerInternalHook } = vi.hoisted(() => ({
-  triggerInternalHook: vi.fn(async () => undefined),
+type TestGatewayHookEvent = {
+  type?: string;
+  action?: string;
+  context?: Record<string, unknown>;
+};
+
+const { triggerInternalHook, readRestartSentinel, writeRestartSentinel } = vi.hoisted(() => ({
+  triggerInternalHook: vi.fn(async (_event: TestGatewayHookEvent) => undefined),
+  readRestartSentinel: vi.fn(async () => null),
+  writeRestartSentinel: vi.fn(async () => "sentinel.json"),
 }));
 
 vi.mock("../hooks/internal-hooks.js", async () => {
@@ -15,6 +23,17 @@ vi.mock("../hooks/internal-hooks.js", async () => {
   };
 });
 
+vi.mock("../infra/restart-sentinel.js", async () => {
+  const actual = await vi.importActual<typeof import("../infra/restart-sentinel.js")>(
+    "../infra/restart-sentinel.js",
+  );
+  return {
+    ...actual,
+    readRestartSentinel,
+    writeRestartSentinel,
+  };
+});
+
 vi.mock("../channels/plugins/index.js", () => ({
   listChannelPlugins: () => [],
 }));
@@ -23,111 +42,152 @@ vi.mock("../hooks/gmail-watcher.js", () => ({
   stopGmailWatcher: vi.fn(async () => undefined),
 }));
 
-describe("createGatewayCloseHandler", () => {
-  it("unsubscribes lifecycle listeners during shutdown", async () => {
-    const tickInterval = setInterval(() => undefined, 60_000);
-    const healthInterval = setInterval(() => undefined, 60_000);
-    const dedupeCleanup = setInterval(() => undefined, 60_000);
-    try {
-      const lifecycleUnsub = vi.fn();
-      const close = createGatewayCloseHandler({
-        bonjourStop: null,
-        tailscaleCleanup: null,
-        canvasHost: null,
-        canvasHostServer: null,
-        stopChannel: vi.fn(async () => undefined),
-        pluginServices: null,
-        cron: { stop: vi.fn() },
-        heartbeatRunner: { stop: vi.fn() } as never,
-        updateCheckStop: null,
-        nodePresenceTimers: new Map(),
-        broadcast: vi.fn(),
-        tickInterval,
-        healthInterval,
-        dedupeCleanup,
-        mediaCleanup: null,
-        agentUnsub: null,
-        heartbeatUnsub: null,
-        transcriptUnsub: null,
-        lifecycleUnsub,
-        chatRunState: { clear: vi.fn() },
-        clients: new Set(),
-        configReloader: { stop: vi.fn(async () => undefined) },
-        wss: { close: (cb: () => void) => cb() } as never,
-        httpServer: {
-          close: (cb: (err?: Error | null) => void) => cb(null),
-          closeIdleConnections: vi.fn(),
-        } as never,
-      });
-
-      await close({ reason: "test shutdown" });
-
-      expect(lifecycleUnsub).toHaveBeenCalledTimes(1);
-    } finally {
+function createCloseHarness(params?: {
+  lifecycleUnsub?: () => void;
+  broadcast?: (event: string, payload: unknown) => void;
+}) {
+  const tickInterval = setInterval(() => undefined, 60_000);
+  const healthInterval = setInterval(() => undefined, 60_000);
+  const dedupeCleanup = setInterval(() => undefined, 60_000);
+  const close = createGatewayCloseHandler({
+    bonjourStop: null,
+    tailscaleCleanup: null,
+    canvasHost: null,
+    canvasHostServer: null,
+    stopChannel: vi.fn(async () => undefined),
+    pluginServices: null,
+    cron: { stop: vi.fn() },
+    heartbeatRunner: { stop: vi.fn() } as never,
+    updateCheckStop: null,
+    nodePresenceTimers: new Map(),
+    broadcast: params?.broadcast ?? vi.fn(),
+    tickInterval,
+    healthInterval,
+    dedupeCleanup,
+    mediaCleanup: null,
+    agentUnsub: null,
+    heartbeatUnsub: null,
+    transcriptUnsub: null,
+    lifecycleUnsub: params?.lifecycleUnsub ?? null,
+    chatRunState: { clear: vi.fn() },
+    clients: new Set(),
+    configReloader: { stop: vi.fn(async () => undefined) },
+    wss: { close: (cb: () => void) => cb() } as never,
+    httpServer: {
+      close: (cb: (err?: Error | null) => void) => cb(null),
+      closeIdleConnections: vi.fn(),
+    } as never,
+  });
+  return {
+    close,
+    dispose() {
       clearInterval(tickInterval);
       clearInterval(healthInterval);
       clearInterval(dedupeCleanup);
+    },
+  };
+}
+
+describe("createGatewayCloseHandler", () => {
+  beforeEach(() => {
+    triggerInternalHook.mockReset();
+    triggerInternalHook.mockResolvedValue(undefined);
+    readRestartSentinel.mockReset();
+    readRestartSentinel.mockResolvedValue(null);
+    writeRestartSentinel.mockReset();
+    writeRestartSentinel.mockResolvedValue("sentinel.json");
+  });
+
+  it("unsubscribes lifecycle listeners during shutdown", async () => {
+    const lifecycleUnsub = vi.fn();
+    const harness = createCloseHarness({ lifecycleUnsub });
+    try {
+      await harness.close({ reason: "test shutdown", initiator: "SIGTERM" });
+      expect(lifecycleUnsub).toHaveBeenCalledTimes(1);
+    } finally {
+      harness.dispose();
     }
   });
 
-  it("emits gateway shutdown + pre-restart hooks", async () => {
-    triggerInternalHook.mockClear();
-
-    const tickInterval = setInterval(() => undefined, 60_000);
-    const healthInterval = setInterval(() => undefined, 60_000);
-    const dedupeCleanup = setInterval(() => undefined, 60_000);
+  it("emits gateway shutdown + pre-restart hooks with lifecycle metadata", async () => {
+    const harness = createCloseHarness();
     try {
-      const close = createGatewayCloseHandler({
-        bonjourStop: null,
-        tailscaleCleanup: null,
-        canvasHost: null,
-        canvasHostServer: null,
-        stopChannel: vi.fn(async () => undefined),
-        pluginServices: null,
-        cron: { stop: vi.fn() },
-        heartbeatRunner: { stop: vi.fn() } as never,
-        updateCheckStop: null,
-        nodePresenceTimers: new Map(),
-        broadcast: vi.fn(),
-        tickInterval,
-        healthInterval,
-        dedupeCleanup,
-        mediaCleanup: null,
-        agentUnsub: null,
-        heartbeatUnsub: null,
-        transcriptUnsub: null,
-        lifecycleUnsub: null,
-        chatRunState: { clear: vi.fn() },
-        clients: new Set(),
-        configReloader: { stop: vi.fn(async () => undefined) },
-        wss: { close: (cb: () => void) => cb() } as never,
-        httpServer: {
-          close: (cb: (err?: Error | null) => void) => cb(null),
-          closeIdleConnections: vi.fn(),
-        } as never,
+      await harness.close({
+        reason: "gateway restarting",
+        restartExpectedMs: 123,
+        initiator: "SIGUSR1",
+        restartId: "restart-123",
+        correlationId: "corr-123",
       });
 
-      await close({ reason: "gateway restarting", restartExpectedMs: 123 });
-
-      const shutdownEvent = triggerInternalHook.mock.calls.find(
+      const hookCalls = triggerInternalHook.mock.calls as Array<[TestGatewayHookEvent]>;
+      const shutdownEvent = hookCalls.find(
         (call) => call[0]?.type === "gateway" && call[0]?.action === "shutdown",
       )?.[0];
-      const preRestartEvent = triggerInternalHook.mock.calls.find(
+      const preRestartEvent = hookCalls.find(
         (call) => call[0]?.type === "gateway" && call[0]?.action === "pre-restart",
       )?.[0];
 
       expect(shutdownEvent?.context).toMatchObject({
         reason: "gateway restarting",
         restartExpectedMs: 123,
+        initiator: "SIGUSR1",
+        restartId: "restart-123",
+        correlationId: "corr-123",
       });
       expect(preRestartEvent?.context).toMatchObject({
         reason: "gateway restarting",
         restartExpectedMs: 123,
+        initiator: "SIGUSR1",
+        restartId: "restart-123",
+        correlationId: "corr-123",
       });
+      expect(Array.isArray(preRestartEvent?.context?.outbox)).toBe(true);
     } finally {
-      clearInterval(tickInterval);
-      clearInterval(healthInterval);
-      clearInterval(dedupeCleanup);
+      harness.dispose();
+    }
+  });
+
+  it("persists hook outbox tasks into restart sentinel", async () => {
+    triggerInternalHook.mockImplementation(async (event: TestGatewayHookEvent) => {
+      if (event.type === "gateway" && event.action === "pre-restart") {
+        const outbox = event.context?.outbox as Array<Record<string, unknown>>;
+        outbox.push({
+          message: "Gateway is back after restart",
+          sessionKey: "agent:main:main",
+        });
+      }
+    });
+
+    const harness = createCloseHarness();
+    try {
+      await harness.close({
+        reason: "gateway restarting",
+        restartExpectedMs: 1500,
+        initiator: "SIGUSR1",
+        restartId: "restart-abc",
+      });
+
+      expect(writeRestartSentinel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "restart",
+          status: "ok",
+          restartId: "restart-abc",
+          correlationId: "restart-abc",
+          initiator: "SIGUSR1",
+          suppressPrimaryNotice: true,
+          outbox: [
+            expect.objectContaining({
+              message: "Gateway is back after restart",
+              sessionKey: "agent:main:main",
+              restartId: "restart-abc",
+              correlationId: "restart-abc",
+            }),
+          ],
+        }),
+      );
+    } finally {
+      harness.dispose();
     }
   });
 });

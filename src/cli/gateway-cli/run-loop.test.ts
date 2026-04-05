@@ -196,10 +196,13 @@ describe("runGatewayLoop", () => {
       sigterm();
 
       await expect(exited).resolves.toBe(0);
-      expect(close).toHaveBeenCalledWith({
-        reason: "gateway stopping",
-        restartExpectedMs: null,
-      });
+      expect(close).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: "gateway stopping",
+          restartExpectedMs: null,
+          initiator: "SIGTERM",
+        }),
+      );
       expect(runtime.exit).toHaveBeenCalledWith(0);
     });
   });
@@ -214,7 +217,13 @@ describe("runGatewayLoop", () => {
       waitForActiveEmbeddedRuns.mockResolvedValueOnce({ drained: true });
 
       type StartServer = () => Promise<{
-        close: (opts: { reason: string; restartExpectedMs: number | null }) => Promise<void>;
+        close: (opts: {
+          reason: string;
+          restartExpectedMs: number | null;
+          initiator?: string;
+          restartId?: string;
+          correlationId?: string;
+        }) => Promise<void>;
       }>;
 
       const closeFirst = vi.fn(async () => {});
@@ -274,10 +283,13 @@ describe("runGatewayLoop", () => {
       expect(abortEmbeddedPiRun).toHaveBeenCalledWith(undefined, { mode: "all" });
       expect(markGatewayDraining).toHaveBeenCalledTimes(1);
       expect(gatewayLog.warn).toHaveBeenCalledWith(DRAIN_TIMEOUT_LOG);
-      expect(closeFirst).toHaveBeenCalledWith({
-        reason: "gateway restarting",
-        restartExpectedMs: 1500,
-      });
+      expect(closeFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: "gateway restarting",
+          restartExpectedMs: 1500,
+          initiator: "SIGUSR1",
+        }),
+      );
       expect(markGatewaySigusr1RestartHandled).toHaveBeenCalledTimes(1);
       expect(resetAllLanes).toHaveBeenCalledTimes(1);
 
@@ -285,10 +297,13 @@ describe("runGatewayLoop", () => {
 
       await startedThird;
       await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(closeSecond).toHaveBeenCalledWith({
-        reason: "gateway restarting",
-        restartExpectedMs: 1500,
-      });
+      expect(closeSecond).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: "gateway restarting",
+          restartExpectedMs: 1500,
+          initiator: "SIGUSR1",
+        }),
+      );
       expect(markGatewaySigusr1RestartHandled).toHaveBeenCalledTimes(2);
       expect(markGatewayDraining).toHaveBeenCalledTimes(2);
       expect(resetAllLanes).toHaveBeenCalledTimes(2);
@@ -296,10 +311,13 @@ describe("runGatewayLoop", () => {
 
       sigterm();
       await expect(exited).resolves.toBe(0);
-      expect(closeThird).toHaveBeenCalledWith({
-        reason: "gateway stopping",
-        restartExpectedMs: null,
-      });
+      expect(closeThird).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: "gateway stopping",
+          restartExpectedMs: null,
+          initiator: "SIGTERM",
+        }),
+      );
     });
   });
 

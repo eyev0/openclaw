@@ -12,6 +12,7 @@ import {
   consumeRestartSentinel,
   formatRestartSentinelMessage,
   summarizeRestartSentinel,
+  type RestartOutboxTask,
 } from "../infra/restart-sentinel.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -21,6 +22,14 @@ import { loadSessionEntry } from "./session-utils.js";
 const log = createSubsystemLogger("gateway/restart-sentinel");
 const OUTBOUND_RETRY_DELAY_MS = 750;
 const OUTBOUND_MAX_ATTEMPTS = 2;
+
+function normalizeNonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
 
 function enqueueRestartSentinelWake(
   message: string,
@@ -118,38 +127,39 @@ async function deliverRestartSentinelNotice(params: {
   }
 }
 
-export async function scheduleRestartSentinelWake(params: { deps: CliDeps }) {
-  const sentinel = await consumeRestartSentinel();
-  if (!sentinel) {
+async function deliverRestartNoticeForSession(params: {
+  deps: CliDeps;
+  sessionKey: string;
+  summary: string;
+  message: string;
+  deliveryContext?: {
+    channel?: string;
+    to?: string;
+    accountId?: string;
+  };
+  threadId?: string;
+}) {
+  const sessionKey = normalizeNonEmptyString(params.sessionKey);
+  if (!sessionKey) {
     return;
   }
-  const payload = sentinel.payload;
-  const sessionKey = payload.sessionKey?.trim();
-  const message = formatRestartSentinelMessage(payload);
-  const summary = summarizeRestartSentinel(payload);
+
   const wakeDeliveryContext = mergeDeliveryContext(
-    payload.threadId != null
-      ? { ...payload.deliveryContext, threadId: payload.threadId }
-      : payload.deliveryContext,
+    params.threadId != null
+      ? { ...params.deliveryContext, threadId: params.threadId }
+      : params.deliveryContext,
     undefined,
   );
-
-  if (!sessionKey) {
-    const mainSessionKey = resolveMainSessionKeyFromConfig();
-    enqueueSystemEvent(message, { sessionKey: mainSessionKey });
-    return;
-  }
-
-  enqueueRestartSentinelWake(message, sessionKey, wakeDeliveryContext);
+  enqueueRestartSentinelWake(params.message, sessionKey, wakeDeliveryContext);
 
   const { baseSessionKey, threadId: sessionThreadId } = parseSessionThreadInfo(sessionKey);
 
   const { cfg, entry } = loadSessionEntry(sessionKey);
   const parsedTarget = resolveAnnounceTargetFromKey(baseSessionKey ?? sessionKey);
 
-  // Prefer delivery context from sentinel (captured at restart) over session store
+  // Prefer delivery context from sentinel/outbox (captured at restart) over session store
   // Handles race condition where store wasn't flushed before restart
-  const sentinelContext = payload.deliveryContext;
+  const sentinelContext = params.deliveryContext;
   let sessionDeliveryContext = deliveryContextFromSession(entry);
   if (!sessionDeliveryContext && baseSessionKey && baseSessionKey !== sessionKey) {
     const { entry: baseEntry } = loadSessionEntry(baseSessionKey);
@@ -180,7 +190,7 @@ export async function scheduleRestartSentinelWake(params: { deps: CliDeps }) {
   }
 
   const threadId =
-    payload.threadId ??
+    params.threadId ??
     parsedTarget?.threadId ?? // From resolveAnnounceTargetFromKey (extracts :topic:N)
     sessionThreadId ??
     (origin?.threadId != null ? String(origin.threadId) : undefined);
@@ -201,8 +211,8 @@ export async function scheduleRestartSentinelWake(params: { deps: CliDeps }) {
     deps: params.deps,
     cfg,
     sessionKey,
-    summary,
-    message,
+    summary: params.summary,
+    message: params.message,
     channel,
     to: resolved.to,
     accountId: origin?.accountId,
@@ -210,6 +220,107 @@ export async function scheduleRestartSentinelWake(params: { deps: CliDeps }) {
     threadId: resolvedThreadId,
     session: outboundSession,
   });
+}
+
+async function processRestartNotice(params: {
+  deps: CliDeps;
+  summary: string;
+  message: string;
+  sessionKey?: string;
+  deliveryContext?: {
+    channel?: string;
+    to?: string;
+    accountId?: string;
+  };
+  threadId?: string;
+}) {
+  const sessionKey = normalizeNonEmptyString(params.sessionKey);
+  if (!sessionKey) {
+    const mainSessionKey = resolveMainSessionKeyFromConfig();
+    enqueueSystemEvent(params.message, { sessionKey: mainSessionKey });
+    return;
+  }
+  await deliverRestartNoticeForSession({
+    deps: params.deps,
+    sessionKey,
+    summary: params.summary,
+    message: params.message,
+    deliveryContext: params.deliveryContext,
+    threadId: params.threadId,
+  });
+}
+
+function shouldRunOutboxTask(params: {
+  task: RestartOutboxTask;
+  restartId?: string;
+  correlationId?: string;
+}): boolean {
+  const taskRestartId = normalizeNonEmptyString(params.task.restartId);
+  if (taskRestartId && params.restartId && taskRestartId !== params.restartId) {
+    return false;
+  }
+  const taskCorrelationId = normalizeNonEmptyString(params.task.correlationId);
+  if (taskCorrelationId && params.correlationId && taskCorrelationId !== params.correlationId) {
+    return false;
+  }
+  return true;
+}
+
+export async function scheduleRestartSentinelWake(params: { deps: CliDeps }) {
+  const sentinel = await consumeRestartSentinel();
+  if (!sentinel) {
+    return;
+  }
+  const payload = sentinel.payload;
+  const summary = summarizeRestartSentinel(payload);
+  const message = formatRestartSentinelMessage(payload);
+  const restartId = normalizeNonEmptyString(payload.restartId);
+  const correlationId = normalizeNonEmptyString(payload.correlationId) ?? restartId;
+
+  const suppressPrimaryNotice = payload.suppressPrimaryNotice === true;
+  if (!suppressPrimaryNotice) {
+    await processRestartNotice({
+      deps: params.deps,
+      summary,
+      message,
+      sessionKey: payload.sessionKey,
+      deliveryContext: payload.deliveryContext,
+      threadId: payload.threadId,
+    });
+  }
+
+  const outbox = Array.isArray(payload.outbox) ? payload.outbox : [];
+  if (outbox.length === 0) {
+    return;
+  }
+
+  for (const task of outbox) {
+    if (!task || typeof task !== "object") {
+      continue;
+    }
+    if (!shouldRunOutboxTask({ task, restartId, correlationId })) {
+      continue;
+    }
+    const taskMessage = normalizeNonEmptyString(task.message);
+    if (!taskMessage) {
+      continue;
+    }
+    await processRestartNotice({
+      deps: params.deps,
+      summary: `${summary} (outbox)`,
+      message: taskMessage,
+      sessionKey: normalizeNonEmptyString(task.sessionKey) ?? payload.sessionKey,
+      deliveryContext:
+        task.deliveryContext && typeof task.deliveryContext === "object"
+          ? {
+              channel: normalizeNonEmptyString(task.deliveryContext.channel),
+              to: normalizeNonEmptyString(task.deliveryContext.to),
+              accountId: normalizeNonEmptyString(task.deliveryContext.accountId),
+            }
+          : payload.deliveryContext,
+      threadId: normalizeNonEmptyString(task.threadId) ?? payload.threadId,
+    });
+  }
 }
 
 export function shouldWakeFromRestartSentinel() {

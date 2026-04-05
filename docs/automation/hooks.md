@@ -239,6 +239,13 @@ Each event includes:
     sessionKey?: string,           // routing session key
     sessionId?: string,            // internal session UUID
     agentId?: string,              // resolved agent ID
+    // Gateway lifecycle events (gateway:startup/shutdown/pre-restart):
+    reason?: string,
+    restartExpectedMs?: number | null,
+    initiator?: string,
+    restartId?: string,
+    correlationId?: string,
+    outbox?: GatewayRestartOutboxTask[],
     // Message events (see Message Events section for full details):
     from?: string,             // message:received
     to?: string,               // message:sent
@@ -298,6 +305,65 @@ Gateway lifecycle events:
 - **`gateway:startup`**: After channels start and hooks are loaded
 - **`gateway:shutdown`**: When the gateway begins shutting down
 - **`gateway:pre-restart`**: Before a gateway restart is initiated
+
+`gateway:shutdown` and `gateway:pre-restart` include lifecycle metadata:
+
+- `reason`: human-readable shutdown reason
+- `restartExpectedMs`: expected restart delay (or `null` on stop)
+- `initiator`: best-effort source (`SIGUSR1`, `SIGTERM`, etc.)
+- `restartId`: stable restart identifier
+- `correlationId`: lifecycle correlation identifier (alias of `restartId` today)
+- `outbox`: mutable task array persisted for execution on next startup
+
+`gateway:startup` includes `restartId`, `correlationId`, and `initiator` when startup follows a restart sentinel.
+
+#### Example: restart-notify outbox hook
+
+Use this pattern to queue a post-restart message from `gateway:pre-restart`.
+
+```typescript
+import type { HookHandler } from "@openclaw/hooks";
+
+const restartNotify: HookHandler = async (event) => {
+  if (event.type !== "gateway" || event.action !== "pre-restart") {
+    return;
+  }
+
+  const ctx = event.context as {
+    restartId?: string;
+    correlationId?: string;
+    outbox?: Array<Record<string, unknown>>;
+  };
+
+  if (!Array.isArray(ctx.outbox)) {
+    return;
+  }
+
+  // Route to a known session that owns your Telegram/Discord delivery context.
+  const sessionKey = process.env.OPENCLAW_RESTART_NOTIFY_SESSION_KEY?.trim();
+  if (!sessionKey) {
+    return;
+  }
+
+  ctx.outbox.push({
+    message: "🔁 Gateway restarted. I am back online.",
+    sessionKey,
+    restartId: ctx.restartId,
+    correlationId: ctx.correlationId,
+  });
+};
+
+export default restartNotify;
+```
+
+Full example file: `docs/automation/examples/restart-notify.hook.ts`
+
+How it works:
+
+1. `gateway:pre-restart` adds tasks to `context.outbox`
+2. Outbox is persisted with the restart sentinel
+3. On startup, tasks run only when restart guards match (`restartId`/`correlationId`)
+4. The target session is woken and receives the queued message
 
 ### Session Patch Events
 

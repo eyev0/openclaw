@@ -24,6 +24,7 @@ import {
 } from "../hooks/internal-hooks.js";
 import { loadInternalHooks } from "../hooks/loader.js";
 import { isTruthyEnvValue } from "../infra/env.js";
+import { readRestartSentinel } from "../infra/restart-sentinel.js";
 import type { loadOpenClawPlugins } from "../plugins/loader.js";
 import { type PluginServicesHandle, startPluginServices } from "../plugins/services.js";
 import {
@@ -167,12 +168,21 @@ export async function startGatewaySidecars(params: {
     );
   }
 
+  const startupRestartPayload = shouldWakeFromRestartSentinel()
+    ? (await readRestartSentinel().catch(() => null))?.payload
+    : null;
+
   if (params.cfg.hooks?.internal?.enabled !== false) {
     setTimeout(() => {
       const hookEvent = createInternalHookEvent("gateway", "startup", "gateway:startup", {
         cfg: params.cfg,
         deps: params.deps,
         workspaceDir: params.defaultWorkspaceDir,
+        ...(startupRestartPayload?.restartId ? { restartId: startupRestartPayload.restartId } : {}),
+        ...(startupRestartPayload?.correlationId
+          ? { correlationId: startupRestartPayload.correlationId }
+          : {}),
+        ...(startupRestartPayload?.initiator ? { initiator: startupRestartPayload.initiator } : {}),
       });
       void triggerInternalHook(hookEvent);
     }, 250);
