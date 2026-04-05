@@ -40,6 +40,8 @@ let lastRestartEmittedAt = 0;
 let pendingRestartTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingRestartDueAt = 0;
 let pendingRestartReason: string | undefined;
+let pendingRestartInitiator: string | undefined;
+let emittedRestartInitiator: string | undefined;
 
 function hasUnconsumedRestartSignal(): boolean {
   return emittedRestartToken > consumedRestartToken;
@@ -52,6 +54,7 @@ function clearPendingScheduledRestart(): void {
   pendingRestartTimer = null;
   pendingRestartDueAt = 0;
   pendingRestartReason = undefined;
+  pendingRestartInitiator = undefined;
 }
 
 export type RestartAuditInfo = {
@@ -109,7 +112,7 @@ export function setPreRestartDeferralCheck(fn: () => number): void {
  * Both scheduleGatewaySigusr1Restart and the config watcher should use this
  * to ensure only one restart fires.
  */
-export function emitGatewayRestart(): boolean {
+export function emitGatewayRestart(opts?: { initiator?: string }): boolean {
   if (hasUnconsumedRestartSignal()) {
     clearPendingScheduledRestart();
     return false;
@@ -117,6 +120,10 @@ export function emitGatewayRestart(): boolean {
   clearPendingScheduledRestart();
   const cycleToken = ++restartCycleToken;
   emittedRestartToken = cycleToken;
+  emittedRestartInitiator =
+    typeof opts?.initiator === "string" && opts.initiator.trim()
+      ? opts.initiator.trim().slice(0, 120)
+      : undefined;
   authorizeGatewaySigusr1Restart();
   try {
     if (process.listenerCount("SIGUSR1") > 0) {
@@ -127,6 +134,7 @@ export function emitGatewayRestart(): boolean {
   } catch {
     // Roll back the cycle marker so future restart requests can still proceed.
     emittedRestartToken = consumedRestartToken;
+    emittedRestartInitiator = undefined;
     return false;
   }
   lastRestartEmittedAt = Date.now();
@@ -173,6 +181,12 @@ export function consumeGatewaySigusr1RestartAuthorization(): boolean {
   return true;
 }
 
+export function consumeGatewaySigusr1RestartInitiator(fallback?: string): string | undefined {
+  const initiator = emittedRestartInitiator;
+  emittedRestartInitiator = undefined;
+  return initiator ?? fallback;
+}
+
 /**
  * Mark the currently emitted SIGUSR1 restart cycle as consumed by the run loop.
  * This explicitly advances the cycle state instead of resetting emit guards inside
@@ -181,6 +195,7 @@ export function consumeGatewaySigusr1RestartAuthorization(): boolean {
 export function markGatewaySigusr1RestartHandled(): void {
   if (hasUnconsumedRestartSignal()) {
     consumedRestartToken = emittedRestartToken;
+    emittedRestartInitiator = undefined;
   }
 }
 
@@ -200,23 +215,25 @@ export function deferGatewayRestartUntilIdle(opts: {
   hooks?: RestartDeferralHooks;
   pollMs?: number;
   maxWaitMs?: number;
+  emit?: () => void;
 }): void {
   const pollMsRaw = opts.pollMs ?? DEFAULT_DEFERRAL_POLL_MS;
   const pollMs = Math.max(10, Math.floor(pollMsRaw));
   const maxWaitMsRaw = opts.maxWaitMs ?? DEFAULT_DEFERRAL_MAX_WAIT_MS;
   const maxWaitMs = Math.max(pollMs, Math.floor(maxWaitMsRaw));
+  const emitRestart = opts.emit ?? (() => emitGatewayRestart());
 
   let pending: number;
   try {
     pending = opts.getPendingCount();
   } catch (err) {
     opts.hooks?.onCheckError?.(err);
-    emitGatewayRestart();
+    emitRestart();
     return;
   }
   if (pending <= 0) {
     opts.hooks?.onReady?.();
-    emitGatewayRestart();
+    emitRestart();
     return;
   }
 
@@ -229,20 +246,20 @@ export function deferGatewayRestartUntilIdle(opts: {
     } catch (err) {
       clearInterval(poll);
       opts.hooks?.onCheckError?.(err);
-      emitGatewayRestart();
+      emitRestart();
       return;
     }
     if (current <= 0) {
       clearInterval(poll);
       opts.hooks?.onReady?.();
-      emitGatewayRestart();
+      emitRestart();
       return;
     }
     const elapsedMs = Date.now() - startedAt;
     if (elapsedMs >= maxWaitMs) {
       clearInterval(poll);
       opts.hooks?.onTimeout?.(current, elapsedMs);
-      emitGatewayRestart();
+      emitRestart();
     }
   }, pollMs);
 }
@@ -400,6 +417,7 @@ export type ScheduledRestart = {
   signal: "SIGUSR1";
   delayMs: number;
   reason?: string;
+  initiator?: string;
   mode: "emit" | "signal";
   coalesced: boolean;
   cooldownMsApplied: number;
@@ -408,6 +426,7 @@ export type ScheduledRestart = {
 export function scheduleGatewaySigusr1Restart(opts?: {
   delayMs?: number;
   reason?: string;
+  initiator?: string;
   audit?: RestartAuditInfo;
 }): ScheduledRestart {
   const delayMsRaw =
@@ -418,6 +437,10 @@ export function scheduleGatewaySigusr1Restart(opts?: {
   const reason =
     typeof opts?.reason === "string" && opts.reason.trim()
       ? opts.reason.trim().slice(0, 200)
+      : undefined;
+  const initiator =
+    typeof opts?.initiator === "string" && opts.initiator.trim()
+      ? opts.initiator.trim().slice(0, 120)
       : undefined;
   const mode = process.listenerCount("SIGUSR1") > 0 ? "emit" : "signal";
   const nowMs = Date.now();
@@ -434,6 +457,7 @@ export function scheduleGatewaySigusr1Restart(opts?: {
       signal: "SIGUSR1",
       delayMs: 0,
       reason,
+      ...(initiator ? { initiator } : {}),
       mode,
       coalesced: true,
       cooldownMsApplied,
@@ -458,6 +482,7 @@ export function scheduleGatewaySigusr1Restart(opts?: {
         signal: "SIGUSR1",
         delayMs: remainingMs,
         reason,
+        ...(initiator ? { initiator } : {}),
         mode,
         coalesced: true,
         cooldownMsApplied,
@@ -467,20 +492,26 @@ export function scheduleGatewaySigusr1Restart(opts?: {
 
   pendingRestartDueAt = requestedDueAt;
   pendingRestartReason = reason;
+  pendingRestartInitiator = initiator;
   pendingRestartTimer = setTimeout(
     () => {
+      const scheduledInitiator = pendingRestartInitiator;
       pendingRestartTimer = null;
       pendingRestartDueAt = 0;
       pendingRestartReason = undefined;
+      pendingRestartInitiator = undefined;
       const pendingCheck = preRestartCheck;
       if (!pendingCheck) {
-        emitGatewayRestart();
+        emitGatewayRestart({ initiator: scheduledInitiator });
         return;
       }
       const cfg = getRuntimeConfig();
       deferGatewayRestartUntilIdle({
         getPendingCount: pendingCheck,
         maxWaitMs: cfg.gateway?.reload?.deferralTimeoutMs,
+        emit: () => {
+          emitGatewayRestart({ initiator: scheduledInitiator });
+        },
       });
     },
     Math.max(0, requestedDueAt - nowMs),
@@ -491,6 +522,7 @@ export function scheduleGatewaySigusr1Restart(opts?: {
     signal: "SIGUSR1",
     delayMs: Math.max(0, requestedDueAt - nowMs),
     reason,
+    ...(initiator ? { initiator } : {}),
     mode,
     coalesced: false,
     cooldownMsApplied,
@@ -507,6 +539,7 @@ export const __testing = {
     emittedRestartToken = 0;
     consumedRestartToken = 0;
     lastRestartEmittedAt = 0;
+    emittedRestartInitiator = undefined;
     clearPendingScheduledRestart();
   },
 };

@@ -221,7 +221,32 @@ export async function startGatewaySidecars(params: {
 
   if (shouldWakeFromRestartSentinel()) {
     setTimeout(() => {
-      void scheduleRestartSentinelWake({ deps: params.deps });
+      void (async () => {
+        const wakeReport = await scheduleRestartSentinelWake({
+          deps: params.deps,
+        });
+        if (!wakeReport || params.cfg.hooks?.internal?.enabled === false) {
+          return;
+        }
+        const reasonRaw = startupRestartPayload?.stats?.reason;
+        const reason =
+          typeof reasonRaw === "string" && reasonRaw.trim() ? reasonRaw.trim() : undefined;
+        const postRestartEvent = createInternalHookEvent(
+          "gateway",
+          "post-restart",
+          "gateway:post-restart",
+          {
+            ...(reason ? { reason } : {}),
+            ...(wakeReport.restartId ? { restartId: wakeReport.restartId } : {}),
+            ...(wakeReport.correlationId ? { correlationId: wakeReport.correlationId } : {}),
+            ...(wakeReport.initiator ? { initiator: wakeReport.initiator } : {}),
+            outboxTotal: wakeReport.outboxTotal,
+            outboxExecuted: wakeReport.outboxExecuted,
+            suppressPrimaryNotice: wakeReport.suppressPrimaryNotice,
+          },
+        );
+        await triggerInternalHook(postRestartEvent);
+      })();
     }, 750);
   }
 

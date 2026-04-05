@@ -9,6 +9,7 @@ import { acquireGatewayLock } from "../../infra/gateway-lock.js";
 import { restartGatewayProcessWithFreshPid } from "../../infra/process-respawn.js";
 import {
   consumeGatewaySigusr1RestartAuthorization,
+  consumeGatewaySigusr1RestartInitiator,
   isGatewaySigusr1RestartExternallyAllowed,
   markGatewaySigusr1RestartHandled,
   scheduleGatewaySigusr1Restart,
@@ -101,7 +102,23 @@ export async function runGatewayLoop(params: {
   const SUPERVISOR_STOP_TIMEOUT_MS = 30_000;
   const SHUTDOWN_TIMEOUT_MS = SUPERVISOR_STOP_TIMEOUT_MS - 5_000;
 
-  const request = (action: GatewayRunSignalAction, signal: string) => {
+  function resolveStopInitiator(signal: string): string {
+    if (signal === "SIGINT") {
+      return "cli:interrupt";
+    }
+    if (signal === "SIGTERM") {
+      if (process.env.INVOCATION_ID) {
+        return "systemd";
+      }
+      if (process.env.LAUNCH_JOB_LABEL) {
+        return "launchctl";
+      }
+      return "signal:SIGTERM";
+    }
+    return `signal:${signal}`;
+  }
+
+  const request = (action: GatewayRunSignalAction, signal: string, initiatorOverride?: string) => {
     if (shuttingDown) {
       gatewayLog.info(`received ${signal} during shutdown; ignoring`);
       return;
@@ -110,6 +127,9 @@ export async function runGatewayLoop(params: {
     const isRestart = action === "restart";
     const restartId = isRestart ? randomUUID() : undefined;
     const correlationId = restartId;
+    const initiator =
+      (typeof initiatorOverride === "string" && initiatorOverride.trim()) ||
+      (isRestart ? `signal:${signal}` : resolveStopInitiator(signal));
     gatewayLog.info(`received ${signal}; ${isRestart ? "restarting" : "shutting down"}`);
 
     // Allow extra time for draining active turns on restart.
@@ -165,7 +185,7 @@ export async function runGatewayLoop(params: {
         await server?.close({
           reason: isRestart ? "gateway restarting" : "gateway stopping",
           restartExpectedMs: isRestart ? 1500 : null,
-          initiator: signal,
+          initiator,
           ...(restartId ? { restartId, correlationId } : {}),
         });
       } catch (err) {
@@ -206,11 +226,16 @@ export async function runGatewayLoop(params: {
       }
       // External SIGUSR1 requests should still reuse the in-process restart
       // scheduler so idle drain and restart coalescing stay consistent.
-      scheduleGatewaySigusr1Restart({ delayMs: 0, reason: "SIGUSR1" });
+      scheduleGatewaySigusr1Restart({
+        delayMs: 0,
+        reason: "SIGUSR1",
+        initiator: "signal:SIGUSR1",
+      });
       return;
     }
+    const restartInitiator = consumeGatewaySigusr1RestartInitiator("signal:SIGUSR1");
     markGatewaySigusr1RestartHandled();
-    request("restart", "SIGUSR1");
+    request("restart", "SIGUSR1", restartInitiator);
   };
 
   process.on("SIGTERM", onSigterm);

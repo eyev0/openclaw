@@ -8,7 +8,9 @@ type TestGatewayHookEvent = {
 };
 
 const { triggerInternalHook, readRestartSentinel, writeRestartSentinel } = vi.hoisted(() => ({
-  triggerInternalHook: vi.fn(async (_event: TestGatewayHookEvent) => undefined),
+  triggerInternalHook: vi.fn(
+    async (_event: TestGatewayHookEvent, _opts?: { perHandlerTimeoutMs?: number }) => undefined,
+  ),
   readRestartSentinel: vi.fn(async () => null),
   writeRestartSentinel: vi.fn(async () => "sentinel.json"),
 }));
@@ -120,7 +122,9 @@ describe("createGatewayCloseHandler", () => {
         correlationId: "corr-123",
       });
 
-      const hookCalls = triggerInternalHook.mock.calls as Array<[TestGatewayHookEvent]>;
+      const hookCalls = triggerInternalHook.mock.calls as Array<
+        [TestGatewayHookEvent, { perHandlerTimeoutMs?: number }?]
+      >;
       const shutdownEvent = hookCalls.find(
         (call) => call[0]?.type === "gateway" && call[0]?.action === "shutdown",
       )?.[0];
@@ -143,21 +147,26 @@ describe("createGatewayCloseHandler", () => {
         correlationId: "corr-123",
       });
       expect(Array.isArray(preRestartEvent?.context?.outbox)).toBe(true);
+      expect(triggerInternalHook.mock.calls[0]?.[1]).toMatchObject({
+        perHandlerTimeoutMs: 1500,
+      });
     } finally {
       harness.dispose();
     }
   });
 
   it("persists hook outbox tasks into restart sentinel", async () => {
-    triggerInternalHook.mockImplementation(async (event: TestGatewayHookEvent) => {
-      if (event.type === "gateway" && event.action === "pre-restart") {
-        const outbox = event.context?.outbox as Array<Record<string, unknown>>;
-        outbox.push({
-          message: "Gateway is back after restart",
-          sessionKey: "agent:main:main",
-        });
-      }
-    });
+    triggerInternalHook.mockImplementation(
+      async (event: TestGatewayHookEvent, _opts?: { perHandlerTimeoutMs?: number }) => {
+        if (event.type === "gateway" && event.action === "pre-restart") {
+          const outbox = event.context?.outbox as Array<Record<string, unknown>>;
+          outbox.push({
+            message: "Gateway is back after restart",
+            sessionKey: "agent:main:main",
+          });
+        }
+      },
+    );
 
     const harness = createCloseHarness();
     try {

@@ -383,7 +383,12 @@ export const configHandlers: GatewayRequestHandlers = {
     if (!parsed) {
       return;
     }
-    if (!(await ensureResolvableSecretRefsOrRespond({ config: parsed.config, respond }))) {
+    if (
+      !(await ensureResolvableSecretRefsOrRespond({
+        config: parsed.config,
+        respond,
+      }))
+    ) {
       return;
     }
     await writeConfigFile(parsed.config, writeOptions);
@@ -471,7 +476,12 @@ export const configHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    if (!(await ensureResolvableSecretRefsOrRespond({ config: validated.config, respond }))) {
+    if (
+      !(await ensureResolvableSecretRefsOrRespond({
+        config: validated.config,
+        respond,
+      }))
+    ) {
       return;
     }
     const changedPaths = diffConfigPaths(snapshot.config, validated.config);
@@ -517,6 +527,7 @@ export const configHandlers: GatewayRequestHandlers = {
     const restart = scheduleGatewaySigusr1Restart({
       delayMs: restartDelayMs,
       reason: "config.patch",
+      initiator: "rpc:config.patch",
       audit: {
         actor: actor.actor,
         deviceId: actor.deviceId,
@@ -556,7 +567,12 @@ export const configHandlers: GatewayRequestHandlers = {
     if (!parsed) {
       return;
     }
-    if (!(await ensureResolvableSecretRefsOrRespond({ config: parsed.config, respond }))) {
+    if (
+      !(await ensureResolvableSecretRefsOrRespond({
+        config: parsed.config,
+        respond,
+      }))
+    ) {
       return;
     }
     const changedPaths = diffConfigPaths(snapshot.config, parsed.config);
@@ -580,6 +596,7 @@ export const configHandlers: GatewayRequestHandlers = {
     const restart = scheduleGatewaySigusr1Restart({
       delayMs: restartDelayMs,
       reason: "config.apply",
+      initiator: "rpc:config.apply",
       audit: {
         actor: actor.actor,
         deviceId: actor.deviceId,

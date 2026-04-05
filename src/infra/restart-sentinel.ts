@@ -27,9 +27,7 @@ export type RestartSentinelStats = {
   durationMs?: number | null;
 };
 
-export type RestartOutboxTask = {
-  /** User-visible message delivered after startup. */
-  message: string;
+export type RestartOutboxTaskBase = {
   /** Session to wake after restart (preferred for routing continuity). */
   sessionKey?: string;
   /** Optional channel routing override captured at shutdown time. */
@@ -45,6 +43,20 @@ export type RestartOutboxTask = {
   /** Optional correlation guard; mismatched tasks are skipped. */
   correlationId?: string;
 };
+
+export type RestartMessageOutboxTask = RestartOutboxTaskBase & {
+  /** Deliver a user-visible message to channel + session after startup. */
+  kind?: "message";
+  message: string;
+};
+
+export type RestartSystemEventOutboxTask = RestartOutboxTaskBase & {
+  /** Queue a system event into the target session after startup. */
+  kind: "system_event";
+  message: string;
+};
+
+export type RestartOutboxTask = RestartMessageOutboxTask | RestartSystemEventOutboxTask;
 
 export type RestartSentinelPayload = {
   kind: "config-apply" | "config-patch" | "update" | "restart";

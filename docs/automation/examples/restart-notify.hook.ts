@@ -30,11 +30,21 @@ const restartNotify: HookHandler = async (event) => {
   }
 
   ctx.outbox.push({
+    kind: "message",
     message: "🔁 Gateway restarted. Back online.",
     sessionKey,
     restartId: ctx.restartId,
     correlationId: ctx.correlationId,
   });
+
+  // Optional: queue a system event without channel delivery.
+  // ctx.outbox.push({
+  //   kind: "system_event",
+  //   message: "restart complete",
+  //   sessionKey,
+  //   restartId: ctx.restartId,
+  //   correlationId: ctx.correlationId,
+  // });
 };
 
 export default restartNotify;

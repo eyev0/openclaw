@@ -305,17 +305,20 @@ Gateway lifecycle events:
 - **`gateway:startup`**: After channels start and hooks are loaded
 - **`gateway:shutdown`**: When the gateway begins shutting down
 - **`gateway:pre-restart`**: Before a gateway restart is initiated
+- **`gateway:post-restart`**: After restart sentinel wake flow completes on startup
 
 `gateway:shutdown` and `gateway:pre-restart` include lifecycle metadata:
 
 - `reason`: human-readable shutdown reason
 - `restartExpectedMs`: expected restart delay (or `null` on stop)
-- `initiator`: best-effort source (`SIGUSR1`, `SIGTERM`, etc.)
+- `initiator`: best-effort source (`signal:SIGUSR1`, `rpc:config.apply`, `tool:gateway`, etc.)
 - `restartId`: stable restart identifier
 - `correlationId`: lifecycle correlation identifier (alias of `restartId` today)
-- `outbox`: mutable task array persisted for execution on next startup
+- `outbox`: mutable task array persisted for execution on next startup (`kind: message | system_event`)
 
 `gateway:startup` includes `restartId`, `correlationId`, and `initiator` when startup follows a restart sentinel.
+
+`gateway:post-restart` includes wake execution stats: `outboxTotal`, `outboxExecuted`, and `suppressPrimaryNotice`.
 
 #### Example: restart-notify outbox hook
 

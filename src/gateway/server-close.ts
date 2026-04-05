@@ -18,6 +18,8 @@ import {
 import type { RestartOutboxTask, RestartSentinelPayload } from "../infra/restart-sentinel.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
 
+const GATEWAY_SHUTDOWN_HOOK_TIMEOUT_MS = 1500;
+
 type GatewayCloseOptions = {
   reason?: string;
   restartExpectedMs?: number | null;
@@ -65,7 +67,11 @@ function normalizeGatewayOutbox(
       const resolvedRestartId = normalizeOutboxTaskStrings(raw.restartId) ?? restartId;
       const resolvedCorrelationId =
         normalizeOutboxTaskStrings(raw.correlationId) ?? correlationId ?? resolvedRestartId;
+      const rawKind = normalizeOutboxTaskStrings((raw as { kind?: unknown }).kind);
+      const kind: RestartOutboxTask["kind"] =
+        rawKind === "system_event" ? "system_event" : "message";
       const task: RestartOutboxTask = {
+        ...(kind === "message" ? { kind: "message" as const } : { kind: "system_event" as const }),
         message,
         ...(sessionKey ? { sessionKey } : {}),
         ...(threadId ? { threadId } : {}),
@@ -205,7 +211,9 @@ export function createGatewayCloseHandler(params: {
           ...(correlationId ? { correlationId } : {}),
           outbox,
         });
-        await triggerInternalHook(shutdownEvent);
+        await triggerInternalHook(shutdownEvent, {
+          perHandlerTimeoutMs: GATEWAY_SHUTDOWN_HOOK_TIMEOUT_MS,
+        });
 
         if (restartExpectedMs !== null) {
           const preRestartEvent = createInternalHookEvent("gateway", "pre-restart", "gateway", {
@@ -216,7 +224,9 @@ export function createGatewayCloseHandler(params: {
             ...(correlationId ? { correlationId } : {}),
             outbox,
           });
-          await triggerInternalHook(preRestartEvent);
+          await triggerInternalHook(preRestartEvent, {
+            perHandlerTimeoutMs: GATEWAY_SHUTDOWN_HOOK_TIMEOUT_MS,
+          });
 
           await persistGatewayRestartOutbox({
             reason,

@@ -4,6 +4,7 @@ import { makeNetworkInterfacesSnapshot } from "../test-helpers/network-interface
 import {
   __testing,
   consumeGatewaySigusr1RestartAuthorization,
+  consumeGatewaySigusr1RestartInitiator,
   emitGatewayRestart,
   isGatewaySigusr1RestartExternallyAllowed,
   markGatewaySigusr1RestartHandled,
@@ -53,6 +54,25 @@ describe("infra runtime", () => {
       expect(isGatewaySigusr1RestartExternallyAllowed()).toBe(true);
     });
 
+    it("propagates scheduled restart initiator metadata", async () => {
+      const handler = () => {};
+      process.on("SIGUSR1", handler);
+      try {
+        scheduleGatewaySigusr1Restart({
+          delayMs: 0,
+          reason: "gateway.restart",
+          initiator: "tool:gateway",
+        });
+
+        await vi.advanceTimersByTimeAsync(0);
+        expect(consumeGatewaySigusr1RestartAuthorization()).toBe(true);
+        expect(consumeGatewaySigusr1RestartInitiator()).toBe("tool:gateway");
+        expect(consumeGatewaySigusr1RestartInitiator("fallback")).toBe("fallback");
+      } finally {
+        process.removeListener("SIGUSR1", handler);
+      }
+    });
+
     it("suppresses duplicate emit until the restart cycle is marked handled", () => {
       const emitSpy = vi.spyOn(process, "emit");
       const handler = () => {};
@@ -77,8 +97,14 @@ describe("infra runtime", () => {
       const handler = () => {};
       process.on("SIGUSR1", handler);
       try {
-        const first = scheduleGatewaySigusr1Restart({ delayMs: 1_000, reason: "first" });
-        const second = scheduleGatewaySigusr1Restart({ delayMs: 1_000, reason: "second" });
+        const first = scheduleGatewaySigusr1Restart({
+          delayMs: 1_000,
+          reason: "first",
+        });
+        const second = scheduleGatewaySigusr1Restart({
+          delayMs: 1_000,
+          reason: "second",
+        });
 
         expect(first.coalesced).toBe(false);
         expect(second.coalesced).toBe(true);
@@ -99,7 +125,10 @@ describe("infra runtime", () => {
       const handler = () => {};
       process.on("SIGUSR1", handler);
       try {
-        const first = scheduleGatewaySigusr1Restart({ delayMs: 0, reason: "first" });
+        const first = scheduleGatewaySigusr1Restart({
+          delayMs: 0,
+          reason: "first",
+        });
         expect(first.coalesced).toBe(false);
         expect(first.delayMs).toBe(0);
 
@@ -107,7 +136,10 @@ describe("infra runtime", () => {
         expect(consumeGatewaySigusr1RestartAuthorization()).toBe(true);
         markGatewaySigusr1RestartHandled();
 
-        const second = scheduleGatewaySigusr1Restart({ delayMs: 0, reason: "second" });
+        const second = scheduleGatewaySigusr1Restart({
+          delayMs: 0,
+          reason: "second",
+        });
         expect(second.coalesced).toBe(false);
         expect(second.delayMs).toBe(30_000);
         expect(second.cooldownMsApplied).toBe(30_000);

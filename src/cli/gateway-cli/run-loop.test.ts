@@ -6,29 +6,40 @@ const acquireGatewayLock = vi.fn(async (_opts?: { port?: number }) => ({
   release: vi.fn(async () => {}),
 }));
 const consumeGatewaySigusr1RestartAuthorization = vi.fn(() => true);
+const consumeGatewaySigusr1RestartInitiator = vi.fn(() => "signal:SIGUSR1");
 const isGatewaySigusr1RestartExternallyAllowed = vi.fn(() => false);
 const markGatewaySigusr1RestartHandled = vi.fn();
-const scheduleGatewaySigusr1Restart = vi.fn((_opts?: { delayMs?: number; reason?: string }) => ({
-  ok: true,
-  pid: process.pid,
-  signal: "SIGUSR1" as const,
-  delayMs: 0,
-  mode: "emit" as const,
-  coalesced: false,
-  cooldownMsApplied: 0,
-}));
+const scheduleGatewaySigusr1Restart = vi.fn(
+  (_opts?: { delayMs?: number; reason?: string; initiator?: string }) => ({
+    ok: true,
+    pid: process.pid,
+    signal: "SIGUSR1" as const,
+    delayMs: 0,
+    mode: "emit" as const,
+    coalesced: false,
+    cooldownMsApplied: 0,
+  }),
+);
 const getActiveTaskCount = vi.fn(() => 0);
 const markGatewayDraining = vi.fn();
-const waitForActiveTasks = vi.fn(async (_timeoutMs: number) => ({ drained: true }));
+const waitForActiveTasks = vi.fn(async (_timeoutMs: number) => ({
+  drained: true,
+}));
 const resetAllLanes = vi.fn();
 const restartGatewayProcessWithFreshPid = vi.fn<
-  () => { mode: "spawned" | "supervised" | "disabled" | "failed"; pid?: number; detail?: string }
+  () => {
+    mode: "spawned" | "supervised" | "disabled" | "failed";
+    pid?: number;
+    detail?: string;
+  }
 >(() => ({ mode: "disabled" }));
 const abortEmbeddedPiRun = vi.fn(
   (_sessionId?: string, _opts?: { mode?: "all" | "compacting" }) => false,
 );
 const getActiveEmbeddedRunCount = vi.fn(() => 0);
-const waitForActiveEmbeddedRuns = vi.fn(async (_timeoutMs: number) => ({ drained: true }));
+const waitForActiveEmbeddedRuns = vi.fn(async (_timeoutMs: number) => ({
+  drained: true,
+}));
 const DRAIN_TIMEOUT_LOG = "drain timeout reached; proceeding with restart";
 const gatewayLog = {
   info: vi.fn(),
@@ -42,10 +53,15 @@ vi.mock("../../infra/gateway-lock.js", () => ({
 
 vi.mock("../../infra/restart.js", () => ({
   consumeGatewaySigusr1RestartAuthorization: () => consumeGatewaySigusr1RestartAuthorization(),
+  consumeGatewaySigusr1RestartInitiator: (fallback?: string) =>
+    consumeGatewaySigusr1RestartInitiator() ?? fallback,
   isGatewaySigusr1RestartExternallyAllowed: () => isGatewaySigusr1RestartExternallyAllowed(),
   markGatewaySigusr1RestartHandled: () => markGatewaySigusr1RestartHandled(),
-  scheduleGatewaySigusr1Restart: (opts?: { delayMs?: number; reason?: string }) =>
-    scheduleGatewaySigusr1Restart(opts),
+  scheduleGatewaySigusr1Restart: (opts?: {
+    delayMs?: number;
+    reason?: string;
+    initiator?: string;
+  }) => scheduleGatewaySigusr1Restart(opts),
 }));
 
 vi.mock("../../infra/process-respawn.js", () => ({
@@ -200,7 +216,7 @@ describe("runGatewayLoop", () => {
         expect.objectContaining({
           reason: "gateway stopping",
           restartExpectedMs: null,
-          initiator: "SIGTERM",
+          initiator: expect.any(String),
         }),
       );
       expect(runtime.exit).toHaveBeenCalledWith(0);
@@ -277,17 +293,21 @@ describe("runGatewayLoop", () => {
       expect(start).toHaveBeenCalledTimes(2);
       await new Promise<void>((resolve) => setImmediate(resolve));
 
-      expect(abortEmbeddedPiRun).toHaveBeenCalledWith(undefined, { mode: "compacting" });
+      expect(abortEmbeddedPiRun).toHaveBeenCalledWith(undefined, {
+        mode: "compacting",
+      });
       expect(waitForActiveTasks).toHaveBeenCalledWith(90_000);
       expect(waitForActiveEmbeddedRuns).toHaveBeenCalledWith(90_000);
-      expect(abortEmbeddedPiRun).toHaveBeenCalledWith(undefined, { mode: "all" });
+      expect(abortEmbeddedPiRun).toHaveBeenCalledWith(undefined, {
+        mode: "all",
+      });
       expect(markGatewayDraining).toHaveBeenCalledTimes(1);
       expect(gatewayLog.warn).toHaveBeenCalledWith(DRAIN_TIMEOUT_LOG);
       expect(closeFirst).toHaveBeenCalledWith(
         expect.objectContaining({
           reason: "gateway restarting",
           restartExpectedMs: 1500,
-          initiator: "SIGUSR1",
+          initiator: "signal:SIGUSR1",
         }),
       );
       expect(markGatewaySigusr1RestartHandled).toHaveBeenCalledTimes(1);
@@ -301,7 +321,7 @@ describe("runGatewayLoop", () => {
         expect.objectContaining({
           reason: "gateway restarting",
           restartExpectedMs: 1500,
-          initiator: "SIGUSR1",
+          initiator: "signal:SIGUSR1",
         }),
       );
       expect(markGatewaySigusr1RestartHandled).toHaveBeenCalledTimes(2);
@@ -315,7 +335,7 @@ describe("runGatewayLoop", () => {
         expect.objectContaining({
           reason: "gateway stopping",
           restartExpectedMs: null,
-          initiator: "SIGTERM",
+          initiator: expect.any(String),
         }),
       );
     });
@@ -336,6 +356,7 @@ describe("runGatewayLoop", () => {
       expect(scheduleGatewaySigusr1Restart).toHaveBeenCalledWith({
         delayMs: 0,
         reason: "SIGUSR1",
+        initiator: "signal:SIGUSR1",
       });
       expect(close).not.toHaveBeenCalled();
       expect(start).toHaveBeenCalledTimes(1);

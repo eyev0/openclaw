@@ -100,6 +100,7 @@ export const updateHandlers: GatewayRequestHandlers = {
         ? scheduleGatewaySigusr1Restart({
             delayMs: restartDelayMs,
             reason: "update.run",
+            initiator: "rpc:update.run",
             audit: {
               actor: actor.actor,
               deviceId: actor.deviceId,

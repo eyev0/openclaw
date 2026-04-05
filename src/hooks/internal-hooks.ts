@@ -49,12 +49,10 @@ export type GatewayStartupHookEvent = InternalHookEvent & {
 };
 
 /**
- * Outbox task queued during `gateway:shutdown` / `gateway:pre-restart` hooks.
+ * Base shape for outbox tasks queued during `gateway:shutdown` / `gateway:pre-restart` hooks.
  * These tasks are persisted into the restart sentinel and executed on startup.
  */
-export type GatewayRestartOutboxTask = {
-  /** User-visible message to deliver after restart. */
-  message: string;
+export type GatewayRestartOutboxTaskBase = {
   /** Target session to wake/deliver into after restart. */
   sessionKey?: string;
   /** Optional routing override captured at shutdown time. */
@@ -71,10 +69,26 @@ export type GatewayRestartOutboxTask = {
   correlationId?: string;
 };
 
+/** Deliver a user-visible message after restart. */
+export type GatewayRestartMessageOutboxTask = GatewayRestartOutboxTaskBase & {
+  kind?: "message";
+  message: string;
+};
+
+/** Queue a system event into the session after restart (no channel send). */
+export type GatewayRestartSystemEventOutboxTask = GatewayRestartOutboxTaskBase & {
+  kind: "system_event";
+  message: string;
+};
+
+export type GatewayRestartOutboxTask =
+  | GatewayRestartMessageOutboxTask
+  | GatewayRestartSystemEventOutboxTask;
+
 export type GatewayLifecycleHookContext = {
   reason?: string;
   restartExpectedMs?: number | null;
-  /** Best-effort initiator/source (e.g. SIGUSR1, SIGTERM). */
+  /** Best-effort initiator/source (e.g. signal:SIGUSR1, rpc:config.apply, tool:gateway). */
   initiator?: string;
   /** Stable restart identifier across pre-restart -> startup. */
   restartId?: string;
@@ -94,6 +108,22 @@ export type GatewayPreRestartHookEvent = InternalHookEvent & {
   type: "gateway";
   action: "pre-restart";
   context: GatewayLifecycleHookContext;
+};
+
+export type GatewayPostRestartHookContext = {
+  reason?: string;
+  restartId?: string;
+  correlationId?: string;
+  initiator?: string;
+  outboxTotal?: number;
+  outboxExecuted?: number;
+  suppressPrimaryNotice?: boolean;
+};
+
+export type GatewayPostRestartHookEvent = InternalHookEvent & {
+  type: "gateway";
+  action: "post-restart";
+  context: GatewayPostRestartHookContext;
 };
 
 // ============================================================================
@@ -328,6 +358,14 @@ export function hasInternalHookListeners(type: InternalHookEventType, action: st
   );
 }
 
+export type TriggerInternalHookOptions = {
+  /**
+   * Optional per-handler timeout. When set, a slow hook is skipped after timeout
+   * and remaining handlers continue to execute.
+   */
+  perHandlerTimeoutMs?: number;
+};
+
 /**
  * Trigger a hook event
  *
@@ -340,7 +378,10 @@ export function hasInternalHookListeners(type: InternalHookEventType, action: st
  *
  * @param event - The event to trigger
  */
-export async function triggerInternalHook(event: InternalHookEvent): Promise<void> {
+export async function triggerInternalHook(
+  event: InternalHookEvent,
+  opts?: TriggerInternalHookOptions,
+): Promise<void> {
   if (!hasInternalHookListeners(event.type, event.action)) {
     return;
   }
@@ -348,10 +389,31 @@ export async function triggerInternalHook(event: InternalHookEvent): Promise<voi
   const typeHandlers = handlers.get(event.type) ?? [];
   const specificHandlers = handlers.get(`${event.type}:${event.action}`) ?? [];
   const allHandlers = [...typeHandlers, ...specificHandlers];
+  const perHandlerTimeoutMs =
+    typeof opts?.perHandlerTimeoutMs === "number" && Number.isFinite(opts.perHandlerTimeoutMs)
+      ? Math.max(1, Math.floor(opts.perHandlerTimeoutMs))
+      : null;
 
   for (const handler of allHandlers) {
     try {
-      await handler(event);
+      if (perHandlerTimeoutMs === null) {
+        await handler(event);
+        continue;
+      }
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`handler timed out after ${perHandlerTimeoutMs}ms`));
+        }, perHandlerTimeoutMs);
+        timer.unref?.();
+      });
+      const handlerPromise = Promise.resolve(handler(event)).finally(() => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+      });
+      await Promise.race([handlerPromise, timeoutPromise]);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.error(`Hook error [${event.type}:${event.action}]: ${message}`);
@@ -434,6 +496,15 @@ export function isGatewayStartupEvent(event: InternalHookEvent): event is Gatewa
     return false;
   }
   return Boolean(getHookContext<GatewayStartupHookContext>(event));
+}
+
+export function isGatewayPostRestartEvent(
+  event: InternalHookEvent,
+): event is GatewayPostRestartHookEvent {
+  if (!isHookEventTypeAndAction(event, "gateway", "post-restart")) {
+    return false;
+  }
+  return Boolean(getHookContext<GatewayPostRestartHookContext>(event));
 }
 
 export function isMessageReceivedEvent(

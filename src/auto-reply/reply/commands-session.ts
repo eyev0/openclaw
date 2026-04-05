@@ -277,7 +277,10 @@ export const handleUsageCommand: CommandHandler = async (params, allowTextComman
       config: params.cfg,
       agentId: params.agentId,
     });
-    const summary = await loadCostUsageSummary({ days: 30, config: params.cfg });
+    const summary = await loadCostUsageSummary({
+      days: 30,
+      config: params.cfg,
+    });
 
     const sessionCost = formatUsd(sessionSummary?.totalCost);
     const sessionTokens = sessionSummary?.totalTokens
@@ -304,7 +307,9 @@ export const handleUsageCommand: CommandHandler = async (params, allowTextComman
 
     return {
       shouldContinue: false,
-      reply: { text: `💸 Usage cost\n${sessionLine}\n${todayLine}\n${last30Line}` },
+      reply: {
+        text: `💸 Usage cost\n${sessionLine}\n${todayLine}\n${last30Line}`,
+      },
     };
   }
 
@@ -373,7 +378,9 @@ export const handleFastCommand: CommandHandler = async (params, allowTextCommand
             : "";
     return {
       shouldContinue: false,
-      reply: { text: `⚙️ Current fast mode: ${state.enabled ? "on" : "off"}${suffix}.` },
+      reply: {
+        text: `⚙️ Current fast mode: ${state.enabled ? "on" : "off"}${suffix}.`,
+      },
     };
   }
 
@@ -470,7 +477,9 @@ export const handleSessionCommand: CommandHandler = async (params, allowTextComm
   if (onDiscord && !discordManager) {
     return {
       shouldContinue: false,
-      reply: { text: "⚠️ Discord thread bindings are unavailable for this account." },
+      reply: {
+        text: "⚠️ Discord thread bindings are unavailable for this account.",
+      },
     };
   }
 
@@ -589,7 +598,9 @@ export const handleSessionCommand: CommandHandler = async (params, allowTextComm
       }
       return {
         shouldContinue: false,
-        reply: { text: "ℹ️ Idle timeout is currently disabled for this focused session." },
+        reply: {
+          text: "ℹ️ Idle timeout is currently disabled for this focused session.",
+        },
       };
     }
 
@@ -607,7 +618,9 @@ export const handleSessionCommand: CommandHandler = async (params, allowTextComm
     }
     return {
       shouldContinue: false,
-      reply: { text: "ℹ️ Max age is currently disabled for this focused session." },
+      reply: {
+        text: "ℹ️ Max age is currently disabled for this focused session.",
+      },
     };
   }
 
@@ -745,7 +758,10 @@ export const handleRestartCommand: CommandHandler = async (params, allowTextComm
   }
   const hasSigusr1Listener = process.listenerCount("SIGUSR1") > 0;
   if (hasSigusr1Listener) {
-    scheduleGatewaySigusr1Restart({ reason: "/restart" });
+    scheduleGatewaySigusr1Restart({
+      reason: "/restart",
+      initiator: "command:/restart",
+    });
     return {
       shouldContinue: false,
       reply: {

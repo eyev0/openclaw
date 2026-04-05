@@ -5,6 +5,7 @@ import {
   createInternalHookEvent,
   getRegisteredEventKeys,
   isAgentBootstrapEvent,
+  isGatewayPostRestartEvent,
   isGatewayStartupEvent,
   isMessageReceivedEvent,
   isMessageSentEvent,
@@ -146,6 +147,33 @@ describe("hooks", () => {
       await expect(triggerInternalHook(event)).resolves.not.toThrow();
     });
 
+    it("times out slow handlers and continues with remaining handlers", async () => {
+      vi.useFakeTimers();
+      try {
+        const slowHandler = vi.fn(
+          () =>
+            new Promise<void>(() => {
+              // never resolves
+            }),
+        );
+        const nextHandler = vi.fn();
+
+        registerInternalHook("command:new", slowHandler);
+        registerInternalHook("command:new", nextHandler);
+
+        const event = createInternalHookEvent("command", "new", "test-session");
+        const run = triggerInternalHook(event, { perHandlerTimeoutMs: 10 });
+
+        await vi.advanceTimersByTimeAsync(10);
+        await run;
+
+        expect(slowHandler).toHaveBeenCalledWith(event);
+        expect(nextHandler).toHaveBeenCalledWith(event);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("stores handlers in the global singleton registry", async () => {
       const globalHooks = resolveGlobalSingleton<Map<string, Array<(event: unknown) => unknown>>>(
         INTERNAL_HOOK_HANDLERS_KEY,
@@ -231,6 +259,21 @@ describe("hooks", () => {
       expected: boolean;
     }>)("$name", ({ event, expected }) => {
       expect(isGatewayStartupEvent(event)).toBe(expected);
+    });
+  });
+
+  describe("isGatewayPostRestartEvent", () => {
+    it("returns true for gateway:post-restart events", () => {
+      const event = createInternalHookEvent("gateway", "post-restart", "gateway:post-restart", {
+        restartId: "restart-1",
+        outboxExecuted: 1,
+      });
+      expect(isGatewayPostRestartEvent(event)).toBe(true);
+    });
+
+    it("returns false for non-post-restart events", () => {
+      const event = createInternalHookEvent("gateway", "startup", "gateway:startup", {});
+      expect(isGatewayPostRestartEvent(event)).toBe(false);
     });
   });
 
