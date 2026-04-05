@@ -296,6 +296,8 @@ Specific handler registration uses the literal key format `${type}:${action}`. F
 Triggered when the gateway starts:
 
 - **`gateway:startup`**: After channels start and hooks are loaded
+- **`gateway:shutdown`**: When the gateway begins shutting down
+- **`gateway:pre-restart`**: Before a gateway restart is initiated
 
 ### Session Patch Events
 
