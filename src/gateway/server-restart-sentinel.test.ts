@@ -285,7 +285,7 @@ describe("scheduleRestartSentinelWake", () => {
     );
     expect(mocks.requestHeartbeatNow).toHaveBeenCalledWith(
       expect.objectContaining({
-        reason: "gateway.restart.outbox",
+        reason: "hook:gateway.restart.outbox",
         sessionKey: "agent:main:main",
       }),
     );

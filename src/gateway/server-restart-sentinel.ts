@@ -178,7 +178,7 @@ function executePersistedRestartOutbox(params: {
           }
         : {}),
     });
-    requestHeartbeatNow({ reason: "gateway.restart.outbox", sessionKey: sessionKeyRaw });
+    requestHeartbeatNow({ reason: "hook:gateway.restart.outbox", sessionKey: sessionKeyRaw });
   }
 }
 

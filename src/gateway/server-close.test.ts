@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { RestartSentinelPayload } from "../infra/restart-sentinel.js";
 import { createGatewayCloseHandler } from "./server-close.js";
 
 type TestGatewayHookEvent = {
@@ -193,7 +194,7 @@ describe("createGatewayCloseHandler", () => {
 
   it("persists hook outbox tasks into restart sentinel", async () => {
     triggerInternalHook.mockImplementation(
-      async (event: TestGatewayHookEvent, _opts?: { perHandlerTimeoutMs?: number }) => {
+      async (event: TestGatewayHookEvent) => {
         if (event.type === "gateway" && event.action === "pre-restart") {
           const outbox = event.context?.outbox as Array<Record<string, unknown>>;
           outbox.push({
@@ -237,7 +238,7 @@ describe("createGatewayCloseHandler", () => {
 
   it("preserves legacy top-level routing fields for normalized message outbox tasks", async () => {
     triggerInternalHook.mockImplementation(
-      async (event: TestGatewayHookEvent, _opts?: { perHandlerTimeoutMs?: number }) => {
+      async (event: TestGatewayHookEvent) => {
         if (event.type === "gateway" && event.action === "pre-restart") {
           const outbox = event.context?.outbox as Array<Record<string, unknown>>;
           outbox.push({
@@ -258,7 +259,8 @@ describe("createGatewayCloseHandler", () => {
         restartExpectedMs: 1500,
       });
 
-      const payload = writeRestartSentinel.mock.calls[0]?.[0];
+      const firstCall = writeRestartSentinel.mock.calls[0] as unknown[] | undefined;
+      const payload = firstCall?.[0] as RestartSentinelPayload | undefined;
       expect(payload?.outbox).toEqual([
         expect.objectContaining({
           kind: "message",
@@ -278,7 +280,7 @@ describe("createGatewayCloseHandler", () => {
 
   it("does not suppress the primary notice when persisted outbox is not deliverable", async () => {
     triggerInternalHook.mockImplementation(
-      async (event: TestGatewayHookEvent, _opts?: { perHandlerTimeoutMs?: number }) => {
+      async (event: TestGatewayHookEvent) => {
         if (event.type === "gateway" && event.action === "pre-restart") {
           const outbox = event.context?.outbox as Array<Record<string, unknown>>;
           outbox.push({
@@ -295,7 +297,8 @@ describe("createGatewayCloseHandler", () => {
         restartExpectedMs: 1500,
       });
 
-      const payload = writeRestartSentinel.mock.calls[0]?.[0];
+      const firstCall = writeRestartSentinel.mock.calls[0] as unknown[] | undefined;
+      const payload = firstCall?.[0] as RestartSentinelPayload | undefined;
       expect(payload?.outbox).toEqual([
         expect.objectContaining({
           kind: "message",

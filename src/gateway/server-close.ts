@@ -174,11 +174,12 @@ async function persistGatewayRestartOutbox(params: {
   const resolvedCorrelationId =
     params.correlationId ?? existingPayload?.correlationId ?? resolvedRestartId;
   const resolvedInitiator = params.initiator ?? existingPayload?.initiator;
+  const existingSessionKey = existingPayload?.sessionKey;
   const suppressPrimaryNotice =
     typeof existingPayload?.suppressPrimaryNotice === "boolean"
       ? existingPayload.suppressPrimaryNotice &&
-        hasDeliverableGatewayOutboxTask(mergedOutbox, existingPayload?.sessionKey)
-      : !existingPayload && hasDeliverableGatewayOutboxTask(mergedOutbox, existingPayload?.sessionKey)
+        hasDeliverableGatewayOutboxTask(mergedOutbox, existingSessionKey)
+      : !existingPayload && hasDeliverableGatewayOutboxTask(mergedOutbox, existingSessionKey)
         ? true
         : undefined;
   const stats = {
@@ -307,7 +308,7 @@ export function createGatewayCloseHandler(params: {
         });
         const outcome = await Promise.race([hookPromise, timeoutPromise]);
         if (outcome === "timeout") {
-          (params.logger ?? logger).warn?.("gateway lifecycle hook timed out", {
+          params.logger?.warn?.("gateway lifecycle hook timed out", {
             hookLabel,
             timeoutMs: GATEWAY_SHUTDOWN_HOOK_TIMEOUT_MS,
           });
