@@ -6,6 +6,7 @@ export type UndiciRuntimeDeps = {
   Agent: typeof import("undici").Agent;
   EnvHttpProxyAgent: typeof import("undici").EnvHttpProxyAgent;
   ProxyAgent: typeof import("undici").ProxyAgent;
+  FormData?: typeof FormData;
   fetch: typeof import("undici").fetch;
 };
 
@@ -36,7 +37,10 @@ function isUndiciRuntimeDeps(value: unknown): value is UndiciRuntimeDeps {
 export function loadUndiciRuntimeDeps(): UndiciRuntimeDeps {
   const override = (globalThis as Record<string, unknown>)[TEST_UNDICI_RUNTIME_DEPS_KEY];
   if (isUndiciRuntimeDeps(override)) {
-    return override;
+    return {
+      ...override,
+      FormData: override.FormData ?? globalThis.FormData,
+    };
   }
 
   const require = createRequire(import.meta.url);
@@ -45,6 +49,7 @@ export function loadUndiciRuntimeDeps(): UndiciRuntimeDeps {
     Agent: undici.Agent,
     EnvHttpProxyAgent: undici.EnvHttpProxyAgent,
     ProxyAgent: undici.ProxyAgent,
+    FormData: undici.FormData ?? globalThis.FormData,
     fetch: undici.fetch,
   };
 }
